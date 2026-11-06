@@ -1,5 +1,5 @@
 // 오프라인 캐시. 파일을 수정하면 CACHE 버전을 올려 주세요.
-const CACHE = "benefits-v1";
+const CACHE = "benefits-v2";
 const ASSETS = ["./", "index.html", "style.css", "app.js", "data.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-180.png", "icons/icon-192.png"];
 
 self.addEventListener("install", e => {

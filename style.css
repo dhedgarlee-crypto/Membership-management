@@ -266,3 +266,18 @@ main { max-width: 1100px; margin: 0 auto; padding: 16px; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes up { from { transform: translateY(24px); opacity: .6; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+/* ---------- Apple Pay 자동 기록 ---------- */
+.muted { color: var(--text-3); font-size: 12px; }
+.pay-box { margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); display: grid; gap: 4px; }
+.pay-row { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; font-size: 13px; color: var(--text-2); align-items: baseline; }
+.pay-row b { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
+.pay-row .muted { grid-column: 1 / -1; margin-top: -2px; }
+.pay-box .small-link { justify-self: start; }
+.guide { padding-left: 20px; margin: 0 0 8px; font-size: 14px; }
+.guide li { margin-bottom: 10px; }
+.guide ul { padding-left: 16px; margin: 6px 0 0; }
+.guide ul li { margin-bottom: 8px; }
+.guide code, .hint code { background: var(--surface-2); padding: 1px 6px; border-radius: 6px; font-size: 12.5px; word-break: break-all; }
+.guide small { color: var(--text-2); }
+.spend-total { font-size: 17px; color: var(--text); font-variant-numeric: tabular-nums; }

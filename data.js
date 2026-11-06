@@ -1,5 +1,7 @@
 // 초기 예시 데이터.
 // 카드 혜택은 2026년 기사·카드 비교 사이트(카드고릴라 등)를 참고했으며, 실제 조건과 다를 수 있습니다.
+// merchants: 결제 가맹점 이름에 이 단어가 들어가면 해당 혜택과 연결 ("@해외" = 해외 통화 결제)
+// pointPer1000: 1,000원당 적립 포인트 (예상 적립 계산용, 특별적립은 기본적립에 더해지는 추가분)
 // verify: true 인 항목은 앱에서 "확인 필요"로 표시됩니다. 공식 앱/홈페이지에서 확인 후 수정하세요.
 
 window.SEED_DATA = {
@@ -97,12 +99,12 @@ window.SEED_DATA = {
 
   benefits: [
     // 현대 아멕스 골드 Edition2
-    { id: "b-amex-voucher", itemId: "hd-amex-gold2", name: "연간 바우처", desc: "연회비 상쇄용 바우처 (약 25만원 상당)", period: "yearly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
-    { id: "b-amex-special", itemId: "hd-amex-gold2", name: "MR 특별적립", desc: "해외·특급호텔·항공·면세점 등 추가 적립", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: 500000, verify: true },
-    { id: "b-amex-base", itemId: "hd-amex-gold2", name: "MR 기본적립", desc: "국내외 1,000원당 1MR", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: null, verify: false },
+    { id: "b-amex-voucher", itemId: "hd-amex-gold2", name: "연간 바우처", desc: "연회비 상쇄용 바우처 (약 25만원 상당)", period: "yearly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, merchants: [], verify: true },
+    { id: "b-amex-special", itemId: "hd-amex-gold2", name: "MR 특별적립", desc: "해외·특급호텔·항공·면세점 등 추가 적립", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: 500000, merchants: ["@해외", "호텔", "HOTEL", "RESORT", "항공", "AIR", "대한항공", "아시아나", "면세", "DUTY", "여행", "골프", "GOLF"], pointPer1000: 0, verify: true },
+    { id: "b-amex-base", itemId: "hd-amex-gold2", name: "MR 기본적립", desc: "국내외 1,000원당 1MR", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: null, merchants: [], pointPer1000: 1, verify: false },
 
     // NH 클래시 트래블
-    { id: "b-nh-lounge", itemId: "nh-classy-travel", name: "공항 라운지", desc: "전 세계 공항 라운지 무료", period: "yearly", limitCount: 4, limitAmount: null, tierLimits: [], minSpend: 1000000, verify: true },
+    { id: "b-nh-lounge", itemId: "nh-classy-travel", name: "공항 라운지", desc: "전 세계 공항 라운지 무료", period: "yearly", limitCount: 4, limitAmount: null, tierLimits: [], minSpend: 1000000, merchants: ["라운지", "LOUNGE"], verify: true },
     { id: "b-nh-fx", itemId: "nh-classy-travel", name: "해외결제 수수료 면제", desc: "해외 이용 수수료 면제, 전월실적 무관", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: null, verify: false },
     { id: "b-nh-point", itemId: "nh-classy-travel", name: "포인트 적립", desc: "국내 1.2% · 해외 3% (실적 100만원↑ 해외 4%)", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
     { id: "b-nh-annual", itemId: "nh-classy-travel", name: "연간 이용 보너스", desc: "연간 1,000만원 이용 시 5만 포인트", period: "yearly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
@@ -116,23 +118,29 @@ window.SEED_DATA = {
     { id: "b-ss-domestic", itemId: "ss-id-select-all", name: "국내 0.7% 할인", desc: "전월실적·한도 없음", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
 
     // 올리브영
-    { id: "b-oy-coupon", itemId: "oliveyoung", name: "등급 쿠폰", desc: "매월 등급별 할인 쿠폰 발급", period: "monthly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
-    { id: "b-oy-sale", itemId: "oliveyoung", name: "올영세일", desc: "분기별 세일 기간 확인", period: "quarterly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
+    { id: "b-oy-coupon", itemId: "oliveyoung", name: "등급 쿠폰", desc: "매월 등급별 할인 쿠폰 발급", period: "monthly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, merchants: ["올리브영", "OLIVE YOUNG", "OLIVEYOUNG"], verify: true },
+    { id: "b-oy-sale", itemId: "oliveyoung", name: "올영세일", desc: "분기별 세일 기간 확인", period: "quarterly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, merchants: ["올리브영", "OLIVE YOUNG", "OLIVEYOUNG"], verify: true },
 
     // CJ ONE
-    { id: "b-cj-point", itemId: "cjone", name: "포인트 적립·사용", desc: "CJ 계열사 결제 시 적립", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: null, verify: false },
-    { id: "b-cj-birthday", itemId: "cjone", name: "생일·등급 쿠폰", desc: "CGV·뚜레쥬르 등 쿠폰", period: "yearly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
+    { id: "b-cj-point", itemId: "cjone", name: "포인트 적립·사용", desc: "CJ 계열사 결제 시 적립", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: null, merchants: ["CGV", "뚜레쥬르", "빕스", "VIPS", "CJ"], verify: false },
+    { id: "b-cj-birthday", itemId: "cjone", name: "생일·등급 쿠폰", desc: "CGV·뚜레쥬르 등 쿠폰", period: "yearly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, merchants: ["CGV", "뚜레쥬르", "빕스", "VIPS", "CJ"], verify: true },
 
     // 롯데
-    { id: "b-lp-point", itemId: "lpoint", name: "L.POINT 적립·사용", desc: "롯데 계열사 결제 시", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: null, verify: false },
-    { id: "b-lp-coupon", itemId: "lpoint", name: "월간 쿠폰", desc: "앱에서 이번 달 쿠폰 확인", period: "monthly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
+    { id: "b-lp-point", itemId: "lpoint", name: "L.POINT 적립·사용", desc: "롯데 계열사 결제 시", period: "always", limitCount: null, limitAmount: null, tierLimits: [], minSpend: null, merchants: ["롯데", "LOTTE", "세븐일레븐", "7-ELEVEN", "롯데리아"], verify: false },
+    { id: "b-lp-coupon", itemId: "lpoint", name: "월간 쿠폰", desc: "앱에서 이번 달 쿠폰 확인", period: "monthly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, merchants: ["롯데", "LOTTE", "세븐일레븐", "7-ELEVEN", "롯데리아"], verify: true },
 
     // T 멤버십
-    { id: "b-t-day", itemId: "tmembership", name: "T day", desc: "매월 T day 제휴 할인", period: "monthly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
-    { id: "b-t-vip", itemId: "tmembership", name: "VIP 혜택 (영화 등)", desc: "등급별 연간 제공 횟수 확인", period: "yearly", limitCount: 3, limitAmount: null, tierLimits: [], minSpend: null, verify: true },
+    { id: "b-t-day", itemId: "tmembership", name: "T day", desc: "매월 T day 제휴 할인", period: "monthly", limitCount: 1, limitAmount: null, tierLimits: [], minSpend: null, merchants: [], verify: true },
+    { id: "b-t-vip", itemId: "tmembership", name: "VIP 혜택 (영화 등)", desc: "등급별 연간 제공 횟수 확인", period: "yearly", limitCount: 3, limitAmount: null, tierLimits: [], minSpend: null, merchants: ["CGV", "롯데시네마", "메가박스"], verify: true },
   ],
 
   logs: [],
+  // Apple Pay 등에서 가져온 결제 내역
+  transactions: [],
+  // 이번 달 이용금액 중 직접 입력한 부분 (자동 기록 외 실물카드 결제 등)
   spend: {},
   dismissed: {},
+  settings: {
+    applePayItemId: "hd-amex-gold2", // 단축어에서 카드를 구분하지 못하면 이 카드로 기록
+  },
 };
