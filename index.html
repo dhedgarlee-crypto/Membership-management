@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>혜택 캘린더</title>
+  <meta name="description" content="내 카드·멤버십 혜택을 월별로 정리하는 앱">
+  <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="혜택">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <h1 class="title">혜택 캘린더</h1>
+      <div class="month-nav" id="month-nav">
+        <button class="icon-btn" data-action="prev" aria-label="이전 달">‹</button>
+        <button class="label" id="month-label" data-action="today" style="border:0;background:none" title="이번 달로"></button>
+        <button class="icon-btn" data-action="next" aria-label="다음 달">›</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="app"></main>
+
+  <nav class="tabbar">
+    <button data-tab="month" class="on"><span class="ico">📅</span>이번 달</button>
+    <button data-tab="history"><span class="ico">📊</span>기록</button>
+    <button data-tab="manage"><span class="ico">⚙️</span>관리</button>
+  </nav>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
