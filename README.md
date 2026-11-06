@@ -1,6 +1,9 @@
-# 혜택 캘린더
+# 아멕스 골드 혜택
 
-카드와 멤버십 혜택을 **월별로 한눈에** 보고, 사용 여부와 아낀 금액을 기록하는 개인용 웹앱(PWA)입니다.
+현대카드 **American Express Gold Card Edition2** 혜택을 한눈에 보고, 사용 여부와 MR 적립을 챙기는 개인용 웹앱(PWA)입니다.
+
+- 홈: 올해 받은 혜택 가치 vs 연회비, 연간 혜택 타일(바우처·라운지·리무진), 이번 달 실적(50만원) 진행, 발레파킹, 영역별 MR 3배 적립 예상(월 4,500MR 한도), 최근 결제
+- 혜택 수치는 2024년 Edition2 공개 자료 기준이며 `data.js`에서 출처와 함께 관리합니다.
 서버 없이 동작하고, 데이터는 기기의 브라우저(localStorage)에만 저장됩니다.
 
 ## 기능
@@ -37,7 +40,7 @@ python3 -m http.server 8000   # http://localhost:8000
 | 파일 | 역할 |
 |---|---|
 | `index.html`, `style.css`, `app.js` | 앱 |
-| `data.js` | 처음 실행할 때 쓰는 예시 데이터 (카드 3종, 멤버십 4종) |
+| `data.js` | 아멕스 골드 Edition2 혜택 데이터 |
 | `sw.js`, `manifest.webmanifest`, `icons/` | PWA (오프라인, 홈 화면 아이콘) |
 | `gen-icons.cjs` | 아이콘 PNG 재생성 스크립트 |
 

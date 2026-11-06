@@ -15,6 +15,7 @@
     return normalize(clone(window.SEED_DATA));
   }
   function normalize(s) {
+    if ((s.version || 1) < 2) s = migrateV2(s);
     s.items ||= []; s.benefits ||= []; s.logs ||= []; s.spend ||= {}; s.dismissed ||= {};
     s.transactions ||= [];
     s.settings ||= {};
@@ -26,8 +27,24 @@
       // 이전 버전 데이터: 예시 혜택에 가맹점 키워드·적립률 채우기
       if (!b.merchants) b.merchants = seedB[b.id]?.merchants ? [...seedB[b.id].merchants] : [];
       if (b.pointPer1000 === undefined) b.pointPer1000 = seedB[b.id]?.pointPer1000 ?? null;
+      if (b.pointCap === undefined) b.pointCap = seedB[b.id]?.pointCap ?? null;
+      if (b.value === undefined) b.value = seedB[b.id]?.value ?? null;
     });
     return s;
+  }
+  // v1(여러 카드·멤버십) → v2(현대카드 아멕스 골드2 전용). 결제 내역·실적은 유지
+  function migrateV2(old) {
+    const seed = clone(window.SEED_DATA);
+    const keep = "hd-amex-gold2";
+    seed.transactions = (old.transactions || []).filter(t => t.itemId === keep);
+    seed.spend = {};
+    for (const [ym, v] of Object.entries(old.spend || {})) if (v && v[keep] != null) seed.spend[ym] = { [keep]: v[keep] };
+    const oldItem = (old.items || []).find(i => i.id === keep);
+    if (oldItem?.feeMonth) seed.items[0].feeMonth = oldItem.feeMonth;
+    // 이전 바우처 기록은 트래블 바우처로 옮김
+    const ids = new Set(seed.benefits.map(b => b.id));
+    seed.logs = (old.logs || []).map(l => l.benefitId === "b-amex-voucher" ? { ...l, benefitId: "g-voucher-travel" } : l).filter(l => ids.has(l.benefitId));
+    return seed;
   }
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -73,11 +90,11 @@
   const benefitsOf = itemId => state.benefits.filter(b => b.itemId === itemId);
   function manualSpend(ym, itemId) { const v = state.spend[ym]?.[itemId]; return v === undefined || v === null ? null : v; }
   function txOf(ym, itemId) { return state.transactions.filter(t => t.date.startsWith(ym) && (!itemId || t.itemId === itemId)); }
-  function autoSpend(ym, itemId) { return txOf(ym, itemId).filter(t => !t.foreign).reduce((s, t) => s + t.amount, 0); }
+  function autoSpend(ym, itemId) { return txOf(ym, itemId).reduce((s, t) => s + krwOf(t), 0); }
   // 실적 = 자동 기록(원화) + 직접 입력분. 둘 다 없으면 null(미입력)
   function getSpend(ym, itemId) {
     const manual = manualSpend(ym, itemId);
-    const hasTx = txOf(ym, itemId).some(t => !t.foreign);
+    const hasTx = txOf(ym, itemId).some(t => krwOf(t) > 0);
     if (manual === null && !hasTx) return null;
     return (manual || 0) + autoSpend(ym, itemId);
   }
@@ -85,34 +102,47 @@
   // ---------- 가맹점 → 혜택 매칭 ----------
   function matchesBenefit(b, tx) {
     if (!b.merchants?.length) return false;
-    const m = (tx.merchant || "").toUpperCase().replace(/\s+/g, "");
-    return b.merchants.some(k => k === "@해외" ? tx.foreign : k && m.includes(k.toUpperCase().replace(/\s+/g, "")));
+    const raw = (tx.merchant || "").toUpperCase();
+    const m = raw.replace(/\s+/g, "");
+    return b.merchants.some(k => {
+      if (k === "@해외") return tx.foreign;
+      if (!k) return false;
+      const K = k.toUpperCase();
+      if (/^[A-Z0-9]{1,4}$/.test(K)) return new RegExp(`(^|[^A-Z])${K}([^A-Z]|$)`).test(raw);
+      return m.includes(K.replace(/\s+/g, ""));
+    });
   }
   function matchedBenefits(tx) { return state.benefits.filter(b => matchesBenefit(b, tx)); }
 
-  // 카드별 예상 포인트: 기본적립(키워드 없음)은 전체, 특별적립(키워드 있음)은 매칭된 결제만
-  function pointEstimate(item, ym) {
-    const rules = benefitsOf(item.id).filter(b => b.pointPer1000);
+  // ---------- MR 적립 추정 ----------
+  // 적립 혜택(pointPer1000 있음) 중 가맹점 키워드가 없는 것 = 기본 적립, 있는 것 = 특별적립 영역
+  // 결제 1건은 처음 매칭된 영역 하나에만 들어가고, 영역마다 월 한도(pointCap)를 적용
+  const pointRules = itemId => benefitsOf(itemId).filter(b => b.pointPer1000);
+  function krwOf(t) { return t.foreign ? (t.krw || 0) : t.amount; }
+  function pointsFor(itemId, ym) {
+    const rules = pointRules(itemId);
     if (!rules.length) return null;
-    const txs = txOf(ym, item.id).filter(t => !t.foreign);
-    const total = getSpend(ym, item.id) || 0;
-    let points = 0, specialAmount = 0, specialMissed = false;
-    const prev = getSpend(addMonths(ym, -1), item.id);
-    for (const b of rules) {
-      const eligible = !b.minSpend || (prev !== null && prev >= b.minSpend);
-      if (!b.merchants.length) { points += Math.floor(total / 1000) * b.pointPer1000; continue; }
-      const amt = txs.filter(t => matchesBenefit(b, t)).reduce((s, t) => s + t.amount, 0);
-      specialAmount += amt;
-      if (eligible) points += Math.floor(amt / 1000) * b.pointPer1000; else if (amt) specialMissed = true;
+    const base = rules.find(b => !b.merchants?.length);
+    const areas = rules.filter(b => b.merchants?.length);
+    const prev = getSpend(addMonths(ym, -1), itemId);
+    const eligible = prev !== null && areas.every(b => !b.minSpend || prev >= b.minSpend);
+    const rows = areas.map(b => ({ b, amount: 0, count: 0, points: 0, capped: false }));
+    let baseAmount = manualSpend(ym, itemId) || 0, unknownForeign = 0;
+    for (const t of txOf(ym, itemId)) {
+      const amt = krwOf(t);
+      const row = rows.find(r => matchesBenefit(r.b, t));
+      if (t.foreign && !t.krw) unknownForeign++;
+      if (row) { row.amount += amt; row.count++; } else baseAmount += amt;
     }
-    return { points, specialAmount, specialMissed };
-  }
-  function specialTxInfo(item, ym) {
-    const special = benefitsOf(item.id).filter(b => b.merchants.length && b.period === "always");
-    if (!special.length) return null;
-    const txs = txOf(ym, item.id);
-    const hits = txs.filter(t => special.some(b => matchesBenefit(b, t)));
-    return { count: hits.length, amount: hits.filter(t => !t.foreign).reduce((s, t) => s + t.amount, 0), foreign: hits.filter(t => t.foreign).length };
+    const baseRate = base?.pointPer1000 || 0;
+    let total = Math.floor(baseAmount / 1000) * baseRate;
+    for (const r of rows) {
+      const rate = eligible ? r.b.pointPer1000 : baseRate;
+      let p = Math.floor(r.amount / 1000) * rate;
+      if (eligible && r.b.pointCap && p > r.b.pointCap) { p = r.b.pointCap; r.capped = true; }
+      r.points = p; total += p;
+    }
+    return { base, baseAmount, basePoints: Math.floor(baseAmount / 1000) * baseRate, rows, total, eligible, prev, unknownForeign };
   }
 
   // ---------- 결제 내역 가져오기 ----------
@@ -230,157 +260,156 @@
     else $app.innerHTML = renderManage();
   }
 
+  function chip(item) {
+    return `<div class="chip-card" style="background:linear-gradient(135deg, ${esc(item.color)}, ${esc(item.color)}cc)"></div>`;
+  }
+
+  // ---------- 홈 (카드 한 장 중심) ----------
+  function mainCard() { return itemById(state.settings.applePayItemId) || state.items[0]; }
+
   function renderMonth() {
+    const card = mainCard();
+    if (!card) return `<div class="empty">관리 탭에서 카드를 추가해 주세요.</div>`;
     const ym = view.ym;
     const { y, m } = parseYm(ym);
-    const trackable = state.benefits.filter(b => b.period !== "always");
-    const statuses = trackable.map(b => ({ b, s: benefitStatus(b, ym) }));
-    const usable = statuses.filter(x => x.s.eligible !== false);
-    const usedCount = usable.filter(x => x.s.used).length;
-    const expiring = usable.filter(x => !x.s.done && periodEndsIn(x.b.period, ym));
-    const monthSaved = savedIn(ym);
-    const yearSaved = savedIn(String(y));
-    const totalFee = state.items.reduce((s, i) => s + (i.annualFee || 0), 0);
+    const perks = benefitsOf(card.id).filter(b => !b.pointPer1000);
+    const yearly = perks.filter(b => b.period === "yearly");
+    const monthly = perks.filter(b => b.period === "monthly");
+    const always = perks.filter(b => b.period === "always");
 
-    let html = `<section class="summary">
-      <div class="stat"><div class="k">이번 달 아낀 금액</div><div class="v">${won(monthSaved)}</div><div class="s">${monthLogs(ym).length}건 기록</div></div>
-      <div class="stat"><div class="k">혜택 사용</div><div class="v">${usedCount}<span style="font-size:15px;color:var(--text-3)"> / ${usable.length}</span></div><div class="s">사용 가능한 혜택 기준</div></div>
-      <div class="stat"><div class="k">이번 달 놓치면 소멸</div><div class="v" style="color:${expiring.length ? "var(--warn)" : "inherit"}">${expiring.length}개</div><div class="s">${m}월 말 기준</div></div>
-      <div class="stat"><div class="k">${y}년 연회비 회수</div><div class="v">${totalFee ? Math.round((yearSaved / totalFee) * 100) + "%" : "–"}</div><div class="s">${won(yearSaved)} / ${totalFee ? won(totalFee) : "연회비 미입력"}</div></div>
+    // 올해 받은 혜택 가치 vs 연회비
+    const yearSaved = savedIn(String(y), card.id);
+    const fee = card.annualFee || 0;
+    const pct = fee ? Math.min(Math.round((yearSaved / fee) * 100), 999) : 0;
+    const trackable = perks.filter(b => b.period !== "always");
+    const usedCount = trackable.filter(b => benefitStatus(b, ym).used).length;
+    const doneCount = trackable.filter(b => benefitStatus(b, ym).done).length;
+
+    let html = `<section class="hero">
+      <div class="hero-card" style="--c:${esc(card.color)}">
+        <div class="hero-card-top"><span>${esc(card.issuer || "")}</span><span>AMERICAN EXPRESS</span></div>
+        <div class="hero-card-name">${esc(card.name)}</div>
+        <div class="hero-card-chip"></div>
+      </div>
+      <div class="hero-stats">
+        <div class="k">${y}년 받은 혜택</div>
+        <div class="big">${won(yearSaved)}</div>
+        ${fee ? `<div class="bar thick"><div class="fill" style="width:${Math.min(pct, 100)}%;background:${pct >= 100 ? "var(--good)" : "var(--gold)"}"></div></div>
+        <div class="s">연회비 ${won(fee)}의 <b>${pct}%</b> 회수${pct >= 100 ? " 🎉" : ` · ${won(fee - yearSaved)} 남음`}</div>` : `<div class="s">관리 탭에서 연회비를 입력하면 회수율이 보여요</div>`}
+        <div class="hero-pills"><span class="pill">혜택 ${trackable.length}개 중 <b>${usedCount}</b>개 사용</span><span class="pill">${doneCount}개 다 씀</span></div>
+      </div>
     </section>`;
 
     // 알림
     const alerts = [];
-    if (state.items.some(i => i.verify) && !state.dismissed.verifyBanner) {
-      alerts.push(`<div class="alert info"><span>ℹ️</span><span><b>"확인 필요"</b> 표시된 혜택은 기사 기준 예시예요. <b>관리</b> 탭에서 실제 조건으로 고쳐 주세요.</span><button class="x" data-action="dismiss" data-key="verifyBanner" aria-label="닫기">✕</button></div>`);
+    if (benefitsOf(card.id).some(b => b.verify) && !state.dismissed.verifyBanner2) {
+      alerts.push(`<div class="alert info"><span>ℹ️</span><span><b>"확인 필요"</b> 표시는 기사 기준 수치예요. 현대카드 앱에서 확인 후 <b>관리</b> 탭에서 고쳐 주세요.</span><button class="x" data-action="dismiss" data-key="verifyBanner2" aria-label="닫기">✕</button></div>`);
     }
-    state.items.filter(i => i.feeMonth === m).forEach(i => {
-      alerts.push(`<div class="alert"><span>💳</span><span><b>${esc(i.name)}</b> 연회비 ${i.annualFee ? won(i.annualFee) + " " : ""}청구 예정 달이에요.</span></div>`);
-    });
-    // 연간 혜택 미사용 (10월부터 알림)
-    if (m >= 10) {
-      state.benefits.filter(b => b.period === "yearly" && (b.limitCount || b.limitAmount)).forEach(b => {
-        const s = benefitStatus(b, ym);
-        if (s.done || s.eligible === false) return;
-        const left = b.limitCount ? `${b.limitCount - s.count}회` : won(b.limitAmount - s.saved);
-        alerts.push(`<div class="alert"><span>⏰</span><span><b>${esc(s.item.name)} ${esc(b.name)}</b> ${left} 남음 · 올해 ${12 - m === 0 ? "이번 달" : `${12 - m + 1}개월`} 안에 사용하세요.</span></div>`);
-      });
-    }
-    if (ym === ymOf(today)) {
-      const daysLeft = lastDay(ym) - today.getDate();
-      state.items.filter(i => i.type === "card" && i.tiers.length).forEach(i => {
-        const sp = getSpend(ym, i.id);
-        if (sp === null) return;
-        const next = [...i.tiers].sort((a, b) => a.min - b.min).find(t => sp < t.min);
-        if (next && next.min - sp <= Math.max(300000, next.min * 0.3)) {
-          alerts.push(`<div class="alert"><span>📈</span><span><b>${esc(i.name)}</b> 다음 달 "${esc(next.label)}"까지 <b>${won(next.min - sp)}</b> 남았어요 (D-${daysLeft}).</span></div>`);
-        }
-      });
-    }
+    if (card.feeMonth === m) alerts.push(`<div class="alert"><span>💳</span><span>이번 달은 연회비 ${fee ? won(fee) + " " : ""}청구 달이에요. 바우처가 새로 나왔는지 확인하세요.</span></div>`);
     if (alerts.length) html += `<div class="alerts">${alerts.join("")}</div>`;
 
-    // 카드/멤버십별
-    const cards = state.items.filter(i => i.type === "card");
-    const members = state.items.filter(i => i.type !== "card");
-    if (cards.length) html += `<div class="section-title"><span>카드</span></div><div class="grid">${cards.map(i => renderItemMonth(i, ym)).join("")}</div>`;
-    if (members.length) html += `<div class="section-title"><span>멤버십</span></div><div class="grid">${members.map(i => renderItemMonth(i, ym)).join("")}</div>`;
-    if (!state.items.length) html += `<div class="empty">관리 탭에서 카드나 멤버십을 추가해 주세요.</div>`;
+    // 연간 혜택
+    const daysLeftYear = Math.max(0, Math.ceil((new Date(y, 11, 31) - new Date(today.getFullYear(), today.getMonth(), today.getDate())) / 86400000));
+    if (yearly.length) {
+      html += `<div class="section-title"><span>연간 혜택 · ${y}년</span>${y === today.getFullYear() ? `<span class="muted">올해 ${daysLeftYear}일 남음</span>` : ""}</div>
+        <div class="tiles">${yearly.map(b => renderTile(b, ym)).join("")}</div>`;
+    }
+    // 이번 달
+    html += `<div class="section-title"><span>${m}월</span>${ym === ymOf(today) ? `<span class="muted">이번 달 ${lastDay(ym) - today.getDate()}일 남음</span>` : ""}</div>`;
+    html += renderSpendPanel(card, ym);
+    if (monthly.length) html += `<div class="tiles" style="margin-top:10px">${monthly.map(b => renderTile(b, ym)).join("")}</div>`;
+    // MR
+    html += renderPointsPanel(card, ym);
+    // 상시
+    if (always.length) {
+      html += `<div class="section-title"><span>언제든 쓰는 혜택</span></div>
+        <div class="tiles">${always.map(b => renderTile(b, ym)).join("")}</div>`;
+    }
+    // 최근 결제
+    const recent = txOf(ym, card.id).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time)).slice(0, 5);
+    html += `<div class="section-title"><span>최근 결제</span><button class="small-link" data-action="import-tx">결제 가져오기 ›</button></div>
+      <div class="panel">${recent.length ? recent.map(txRow).join("") + (txOf(ym, card.id).length > 5 ? `<button class="small-link" data-tab="history">전체 보기 ›</button>` : "") : `<div class="empty">${m}월 결제 내역이 없어요<br><small>Apple Pay 단축어를 설정하면 자동으로 쌓여요</small></div>`}</div>`;
     return html;
   }
 
-  function chip(item) {
-    if (item.type === "card") return `<div class="chip-card" style="background:linear-gradient(135deg, ${esc(item.color)}, ${esc(item.color)}cc)"></div>`;
-    return `<div class="chip-member" style="background:${esc(item.color)}">${esc(item.name.trim().charAt(0))}</div>`;
+  function renderTile(b, ym) {
+    const s = benefitStatus(b, ym);
+    let state_ = "todo", statusText = "아직 안 썼어요", dots = "";
+    if (b.period === "always") {
+      state_ = s.count ? "partial" : "todo";
+      statusText = s.count ? `이번 달 ${s.count}회 · ${won(s.saved)}` : "필요할 때 쓰기";
+    } else if (s.eligible === false) {
+      state_ = "locked"; statusText = `전월 ${compactWon(b.minSpend)} 미달`;
+    } else if (s.done) {
+      state_ = "done"; statusText = b.limitCount > 1 ? `${b.limitCount}회 모두 사용` : "사용 완료";
+    } else if (s.used) {
+      state_ = "partial"; statusText = b.limitCount ? `${b.limitCount - s.count}회 남음` : "사용 중";
+    }
+    if (b.limitCount && b.period !== "always") {
+      dots = `<div class="dots" aria-label="${s.count}/${b.limitCount}회">${Array.from({ length: b.limitCount }, (_, i) => `<i class="${i < s.count ? "on" : ""}"></i>`).join("")}</div>`;
+    }
+    const last = s.logs.length ? s.logs.map(l => l.date).sort().pop() : null;
+    return `<button class="tile ${state_}" data-action="use" data-benefit="${b.id}">
+      <div class="tile-top"><span class="ico">${b.icon || "🎁"}</span>${state_ === "done" ? `<span class="check">✓</span>` : ""}</div>
+      <div class="tile-name">${esc(b.name)}${b.verify ? `<span class="vdot" title="확인 필요"></span>` : ""}</div>
+      <div class="tile-desc">${esc(b.desc || "")}</div>
+      ${dots}
+      <div class="tile-status">${statusText}${last ? ` · ${Number(last.slice(5, 7))}월 ${Number(last.slice(8))}일` : ""}</div>
+    </button>`;
   }
 
-  function renderItemMonth(item, ym) {
-    const saved = savedIn(ym, item.id);
-    const list = benefitsOf(item.id)
-      .map(b => ({ b, s: benefitStatus(b, ym) }))
-      .sort((a, c) => rank(a) - rank(c));
-
-    let spendHtml = "";
-    if (item.type === "card") {
-      const sp = getSpend(ym, item.id);
-      const prev = getSpend(addMonths(ym, -1), item.id);
-      const prevTier = tierFor(item, prev);
-      const curTier = tierFor(item, sp);
-      const maxTier = Math.max(...item.tiers.map(t => t.min), 0);
-      const scale = Math.max(maxTier * 1.15, sp || 0, 1);
-      const ticks = item.tiers.map(t => `<div class="tick" style="left:${(t.min / scale) * 100}%"></div>`).join("");
-      const labels = item.tiers.map(t => `<span class="${sp !== null && sp >= t.min ? "hit" : ""}" style="left:${Math.min((t.min / scale) * 100, 92)}%">${compactWon(t.min)}</span>`).join("");
-      const txs = txOf(ym, item.id);
-      const manual = manualSpend(ym, item.id);
-      const auto = autoSpend(ym, item.id);
-      const isPay = state.settings.applePayItemId === item.id;
-      const est = pointEstimate(item, ym);
-      const sp_ = specialTxInfo(item, ym);
-      const inputHtml = `<input class="spend-input" inputmode="numeric" placeholder="입력" data-action="spend" data-item="${item.id}" value="${manual === null ? "" : manual.toLocaleString("ko-KR")}">`;
-      const autoHtml = txs.length || isPay ? `<div class="pay-box">
-          <div class="pay-row"><span>Apple Pay 자동</span><b>${won(auto)}</b><span class="muted">${txs.length}건${txs.some(t => t.foreign) ? ` (해외 ${txs.filter(t => t.foreign).length}건 별도)` : ""}</span></div>
-          ${sp_ ? `<div class="pay-row"><span>특별적립 대상</span><b>${won(sp_.amount)}</b><span class="muted">${sp_.count}건${sp_.foreign ? ` · 해외 ${sp_.foreign}` : ""}</span></div>` : ""}
-          ${est ? `<div class="pay-row"><span>예상 적립</span><b>${est.points.toLocaleString("ko-KR")} P</b><span class="muted">${est.specialMissed ? "전월 실적 미달로 특별적립 제외" : "기록 기준 추정"}</span></div>` : ""}
-          <button class="small-link" data-action="import-tx">결제 가져오기 ›</button>
-        </div>` : "";
-      spendHtml = `<div class="spend">
-        ${txs.length || isPay
-          ? `<div class="spend-row"><span>이번 달 이용금액</span><b class="spend-total">${sp === null ? "–" : won(sp)}</b></div>
-             <div class="spend-row" style="margin-top:6px"><span class="muted">+ 직접 추가 (실물카드 결제 등)</span>${inputHtml}</div>`
-          : `<div class="spend-row"><span>이번 달 이용금액</span>${inputHtml}</div>`}
-        ${item.tiers.length ? `<div class="bar"><div class="fill" style="width:${Math.min(((sp || 0) / scale) * 100, 100)}%"></div>${ticks}</div><div class="tier-labels">${labels}</div>` : ""}
-        <div class="spend-note">전월 ${prev === null ? "미입력" : won(prev)}${item.tiers.length ? ` → 이번 달 <b>${prevTier ? esc(prevTier.label) : prev === null ? "?" : "실적 미달"}</b> · 다음 달 ${curTier ? esc(curTier.label) : "미달"}` : ""}</div>
-        ${autoHtml}
-      </div>`;
-    }
-
-    return `<article class="item">
-      <div class="item-head">${chip(item)}
-        <div><div class="item-name">${esc(item.name)}</div><div class="item-sub">${esc(item.issuer || "")}${item.verify ? ` · <span class="tag warn">확인 필요</span>` : ""}</div></div>
-        <div class="right">이번 달<b>${won(saved)}</b></div>
+  function renderSpendPanel(card, ym) {
+    const sp = getSpend(ym, card.id);
+    const manual = manualSpend(ym, card.id);
+    const auto = autoSpend(ym, card.id);
+    const prev = getSpend(addMonths(ym, -1), card.id);
+    const goal = card.tiers[0]?.min || 0;
+    const cur = sp || 0;
+    const left = Math.max(goal - cur, 0);
+    const prevOk = goal && prev !== null && prev >= goal;
+    return `<div class="panel">
+      <div class="spend-head"><span>이번 달 실적</span><b>${won(cur)}</b></div>
+      ${goal ? `<div class="bar thick"><div class="fill" style="width:${Math.min((cur / goal) * 100, 100)}%;background:${cur >= goal ? "var(--good)" : "var(--accent)"}"></div></div>
+      <div class="spend-goal">${cur >= goal ? `✅ ${compactWon(goal)}원 달성 → <b>다음 달 ${esc(card.tiers[0].label)}</b>` : `${compactWon(goal)}원까지 <b>${won(left)}</b> 남음 → 채우면 다음 달 ${esc(card.tiers[0].label)}`}</div>` : ""}
+      <div class="spend-split">
+        <span>Apple Pay 자동 <b>${won(auto)}</b></span>
+        <label>+ 직접 추가 <input class="spend-input" inputmode="numeric" placeholder="0" data-action="spend" data-item="${card.id}" value="${manual === null ? "" : manual.toLocaleString("ko-KR")}"></label>
       </div>
-      ${spendHtml}
-      <div class="benefits">${list.map(x => renderBenefitRow(x.b, x.s)).join("") || `<div class="empty">등록된 혜택이 없어요</div>`}</div>
-    </article>`;
-  }
-
-  function rank({ b, s }) {
-    if (b.period === "always") return 3;
-    if (s.eligible === false) return 4;
-    if (s.done) return 2;
-    return 1;
-  }
-
-  function renderBenefitRow(b, s) {
-    const tags = [`<span class="tag">${PERIOD_LABEL[b.period]}</span>`];
-    if (b.minSpend) {
-      if (s.eligible === true) tags.push(`<span class="tag good">전월 ${compactWon(b.minSpend)}↑ 충족</span>`);
-      else if (s.eligible === false) tags.push(`<span class="tag bad">전월 ${compactWon(b.minSpend)} 미달</span>`);
-      else tags.push(`<span class="tag warn">전월 ${compactWon(b.minSpend)}↑ 필요</span>`);
-    }
-    if (b.period !== "always") {
-      if (b.limitCount) tags.push(`<span class="tag accent">${s.count}/${b.limitCount}회</span>`);
-      if (s.amountLimit) tags.push(`<span class="tag accent">${won(s.saved)} / ${won(s.amountLimit)}</span>`);
-      else if (s.amountLimitRange) tags.push(`<span class="tag accent">한도 ${compactWon(s.amountLimitRange[0])}~${compactWon(s.amountLimitRange[1])}</span>`);
-      if (!s.done && b.period !== "monthly" && periodEndsIn(b.period, view.ym)) tags.push(`<span class="tag warn">이번 달 소멸</span>`);
-    } else if (s.saved) {
-      tags.push(`<span class="tag good">${won(s.saved)}</span>`);
-    }
-    if (b.verify) tags.push(`<span class="tag warn">확인 필요</span>`);
-
-    let progress = "";
-    if (s.amountLimit && b.period !== "always") progress = `<div class="progress-mini"><div style="width:${Math.min((s.saved / s.amountLimit) * 100, 100)}%"></div></div>`;
-
-    let btnLabel = "사용";
-    if (b.period === "always") btnLabel = s.count ? `+기록 ${s.count}` : "+기록";
-    else if (s.done) btnLabel = "완료 ✓";
-    else if (b.limitCount && b.limitCount > 1) btnLabel = `사용 ${s.count}/${b.limitCount}`;
-    else if (s.used) btnLabel = `+사용`;
-
-    const cls = ["benefit", s.done ? "done" : "", b.period === "always" ? "always" : ""].join(" ");
-    return `<div class="${cls}">
-      <div class="main"><div class="name">${esc(b.name)}</div>${b.desc ? `<div class="desc">${esc(b.desc)}</div>` : ""}<div class="meta">${tags.join("")}</div>${progress}</div>
-      <button class="use-btn ${s.done ? "done" : ""}" data-action="use" data-benefit="${b.id}">${btnLabel}</button>
+      ${goal ? `<div class="spend-prev ${prevOk ? "ok" : prev === null ? "" : "no"}">전월 실적 ${prev === null ? "미입력" : won(prev)} → 이번 달 특별적립 ${prev === null ? "확인 불가" : prevOk ? "적용 중 ✓" : "미적용"}</div>` : ""}
     </div>`;
+  }
+
+  function renderPointsPanel(card, ym) {
+    const p = pointsFor(card.id, ym);
+    if (!p) return "";
+    const rows = p.rows.map(r => {
+      const cap = r.b.pointCap;
+      const w = cap ? Math.min((r.points / cap) * 100, 100) : 0;
+      return `<div class="mr-row">
+        <span class="ico">${r.b.icon || "•"}</span>
+        <div class="mr-main"><div class="mr-name">${esc(r.b.name)} <span class="muted">${p.eligible ? `${r.b.pointPer1000}배` : "기본"}${r.count ? ` · ${r.count}건 ${won(r.amount)}` : ""}</span></div>
+          ${cap ? `<div class="bar"><div class="fill" style="width:${w}%;background:${r.capped ? "var(--warn)" : "var(--gold)"}"></div></div>` : ""}</div>
+        <div class="mr-val">${r.points.toLocaleString("ko-KR")}${cap ? `<small>/${cap.toLocaleString("ko-KR")}</small>` : ""}</div>
+      </div>`;
+    }).join("");
+    return `<div class="section-title"><span>${parseYm(ym).m}월 MR 적립 (예상)</span><b class="mr-total">${p.total.toLocaleString("ko-KR")} MR</b></div>
+      <div class="panel">
+        ${!p.eligible ? `<div class="alert" style="margin-bottom:10px"><span>⚠️</span><span>${p.prev === null ? "전월 실적이 없어서" : "전월 실적이 50만원 미만이라"} 특별적립 3배가 빠졌어요. 지금은 모두 기본 적립으로 계산했어요.</span></div>` : ""}
+        <div class="mr-row"><span class="ico">${p.base?.icon || "✨"}</span><div class="mr-main"><div class="mr-name">기본 적립 <span class="muted">1,000원당 ${p.base?.pointPer1000 || 0}MR · ${won(p.baseAmount)}</span></div></div><div class="mr-val">${p.basePoints.toLocaleString("ko-KR")}</div></div>
+        ${rows}
+        ${p.unknownForeign ? `<div class="muted" style="margin-top:8px">해외 결제 ${p.unknownForeign}건은 원화 금액을 입력해야 계산돼요 (기록 탭).</div>` : ""}
+        <div class="muted" style="margin-top:8px">특별적립 영역: 해외·호텔·항공/여행사·면세점·골프. 가맹점 이름으로 추정하므로 실제 적립과 다를 수 있어요.</div>
+      </div>`;
+  }
+
+  function txRow(t) {
+    const area = pointRules(t.itemId).find(b => b.merchants?.length && matchesBenefit(b, t));
+    const perks = matchedBenefits(t).filter(b => !b.pointPer1000);
+    return `<div class="log-row"><div class="d">${Number(t.date.slice(5, 7))}/${Number(t.date.slice(8))}</div>
+      <div class="t">${esc(t.merchant || "(가맹점 없음)")}<small>${t.time || ""}${area ? ` <span class="tag good">${area.icon || ""} ${esc(area.name)} 3배</span>` : ""}${perks.map(b => ` <span class="tag accent">${esc(b.name)}</span>`).join("")}</small></div>
+      <div class="a" style="color:var(--text)">${t.foreign ? `${esc(t.amountRaw)}${t.krw ? `<small class="muted" style="display:block;font-weight:400">${won(t.krw)}</small>` : ""}` : won(t.amount)}</div>
+      ${t.foreign ? `<button class="icon-btn" data-action="tx-krw" data-tx="${t.id}" aria-label="원화 금액 입력">₩</button>` : ""}
+      <button class="icon-btn" data-action="del-tx" data-tx="${t.id}" aria-label="삭제">🗑</button></div>`;
   }
 
   function renderHistory() {
@@ -412,14 +441,7 @@
     }).join("") : `<div class="empty">${m}월 사용 기록이 없어요</div>`;
 
     const txs = txOf(ym).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
-    const txHtml = txs.length ? txs.map(t => {
-      const it = itemById(t.itemId);
-      const mb = matchedBenefits(t);
-      return `<div class="log-row"><div class="d">${Number(t.date.slice(5, 7))}/${Number(t.date.slice(8))}</div>
-        <div class="t">${esc(t.merchant || "(가맹점 없음)")}<small>${esc(it ? it.name : "")}${t.time ? " · " + t.time : ""}${mb.length ? " · " + mb.map(b => `<span class="tag accent">${esc(b.name)}</span>`).join(" ") : ""}</small></div>
-        <div class="a" style="color:var(--text)">${t.foreign ? esc(t.amountRaw) : won(t.amount)}</div>
-        <button class="icon-btn" data-action="del-tx" data-tx="${t.id}" aria-label="삭제">🗑</button></div>`;
-    }).join("") : `<div class="empty">${m}월 결제 내역이 없어요<br><small>Apple Pay 단축어를 설정하면 자동으로 쌓여요</small></div>`;
+    const txHtml = txs.length ? txs.map(txRow).join("") : `<div class="empty">${m}월 결제 내역이 없어요<br><small>Apple Pay 단축어를 설정하면 자동으로 쌓여요</small></div>`;
 
     return `<div class="btn-row" style="margin-bottom:6px"><button class="btn primary" data-action="import-tx">결제 가져오기</button></div>
       <div class="section-title" style="margin-top:14px"><span>최근 6개월 아낀 금액</span></div>
@@ -446,10 +468,7 @@
       </article>`;
     }).join("");
 
-    return `<div class="btn-row" style="margin-bottom:14px">
-        <button class="btn primary" data-action="new-item" data-type="card">＋ 카드</button>
-        <button class="btn primary" data-action="new-item" data-type="membership">＋ 멤버십</button></div>
-      <div class="grid">${items}</div>
+    return `<div class="grid">${items}</div>
       <div class="section-title"><span>Apple Pay 자동 기록</span></div>
       <div class="panel">
         <label class="field"><span>Apple Pay에 등록된 카드 (카드 이름을 못 읽을 때 기본값)</span>
@@ -506,7 +525,7 @@
       <form id="use-form">
         <div class="field-row">
           <label class="field"><span>날짜</span><input type="date" name="date" value="${prefill.date || defaultDate(ym)}" required></label>
-          <label class="field"><span>아낀 금액 (선택)</span><input name="saved" inputmode="numeric" placeholder="0"></label>
+          <label class="field"><span>아낀 금액 (선택)</span><input name="saved" inputmode="numeric" placeholder="0" value="${b.value ? b.value.toLocaleString("ko-KR") : ""}"></label>
         </div>
         <div class="quick-amounts">${[1000, 3000, 5000, 10000, 30000].map(v => `<button type="button" data-q="${v}">+${compactWon(v)}</button>`).join("")}${s.amountLimit && s.amountLimit > s.saved ? `<button type="button" data-set="${s.amountLimit - s.saved}">남은 한도 전부</button>` : ""}</div>
         <label class="field" style="margin-top:12px"><span>메모 (선택)</span><input name="memo" value="${esc(prefill.memo || "")}" placeholder="예: 스타벅스, 인천공항 T2"></label>
@@ -668,7 +687,10 @@
 
     openSheet(`<h2>${isNew ? "혜택 추가" : "혜택 편집"}</h2><p class="hint">${esc(item.name)}</p>
       <form id="benefit-form">
-        <label class="field"><span>혜택 이름</span><input name="name" value="${esc(b.name)}" required placeholder="예: 공항 라운지"></label>
+        <div class="field-row" style="grid-template-columns:72px 1fr">
+          <label class="field"><span>아이콘</span><input name="icon" value="${esc(b.icon || "")}" placeholder="🎁" style="text-align:center"></label>
+          <label class="field"><span>혜택 이름</span><input name="name" value="${esc(b.name)}" required placeholder="예: 공항 라운지"></label>
+        </div>
         <label class="field"><span>설명</span><input name="desc" value="${esc(b.desc)}" placeholder="예: 전 세계 공항 라운지 무료"></label>
         <div class="field-row">
           <label class="field"><span>주기</span><select name="period">${Object.entries(PERIOD_LABEL).map(([k, v]) => `<option value="${k}" ${b.period === k ? "selected" : ""}>${v}</option>`).join("")}</select></label>
@@ -679,7 +701,11 @@
           <label class="field"><span>금액 한도 (원)</span><input name="limitAmount" inputmode="numeric" value="${b.limitAmount ? b.limitAmount.toLocaleString("ko-KR") : ""}" placeholder="없음"></label>
         </div>
         <label class="field"><span>연결할 가맹점 키워드 (쉼표로 구분, "@해외" = 해외 결제)</span><input name="merchants" value="${esc((b.merchants || []).join(", "))}" placeholder="예: 올리브영, OLIVE YOUNG"></label>
-        <label class="field"><span>1,000원당 적립 포인트 (선택, 예상 적립 계산용)</span><input name="pointPer1000" inputmode="decimal" value="${b.pointPer1000 ?? ""}" placeholder="없음"></label>
+        <label class="field"><span>1회 사용 시 아낀 금액 (기록할 때 기본값)</span><input name="value" inputmode="numeric" value="${b.value ? b.value.toLocaleString("ko-KR") : ""}" placeholder="예: 라운지 1회 40,000"></label>
+        <div class="field-row">
+          <label class="field"><span>1,000원당 적립 MR (적립 혜택만)</span><input name="pointPer1000" inputmode="decimal" value="${b.pointPer1000 ?? ""}" placeholder="없음"></label>
+          <label class="field"><span>월 적립 한도 MR</span><input name="pointCap" inputmode="numeric" value="${b.pointCap ?? ""}" placeholder="없음"></label>
+        </div>
         <div class="field tiers-edit"><span>실적 구간별 금액 한도 (선택, 금액 한도 대신 사용)</span><div id="tl">${b.tierLimits.map(tlRow).join("")}</div><button type="button" class="small-link" id="add-tl">＋ 구간 추가</button></div>
         <label class="check"><input type="checkbox" name="verify" ${b.verify ? "checked" : ""}> 확인 필요</label>
         <button class="btn primary block" type="submit">저장</button>
@@ -706,6 +732,9 @@
           .filter(t => t.amount > 0).sort((x, y) => x.min - y.min);
         b.merchants = f.merchants.value.split(",").map(x => x.trim()).filter(Boolean);
         b.pointPer1000 = numOrNull(f.pointPer1000.value);
+        b.pointCap = numOrNull(f.pointCap.value);
+        b.value = numOrNull(f.value.value);
+        b.icon = f.icon.value.trim();
         b.verify = f.verify.checked;
         if (isNew) state.benefits.push(b); else state.benefits[state.benefits.findIndex(x => x.id === b.id)] = b;
         save(); closeSheet(); render(); toast("저장했어요");
@@ -772,6 +801,12 @@
     else if (a === "del-tx") {
       if (!confirm("이 결제 내역을 삭제할까요? (실적에서도 빠져요)")) return;
       state.transactions = state.transactions.filter(t => t.id !== el.dataset.tx); save(); render(); toast("삭제했어요");
+    }
+    else if (a === "tx-krw") {
+      const t = state.transactions.find(x => x.id === el.dataset.tx);
+      const v = prompt(`${t.merchant} ${t.amountRaw}\n명세서의 원화 청구 금액을 입력하세요`, t.krw ? String(t.krw) : "");
+      if (v === null) return;
+      t.krw = num(v) || 0; save(); render(); toast("반영했어요");
     }
     else if (a === "export") exportData();
     else if (a === "import") importData();
